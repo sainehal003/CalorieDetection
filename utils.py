@@ -1,52 +1,71 @@
 import numpy as np
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
-from tensorflow.keras.applications import MobileNetV2
+import os
 import pandas as pd
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input, decode_predictions
+from PIL import Image
 
-# Build the model from MobileNetV2 base
-def build_model():
-    base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
-    base_model.trainable = False  # freeze base model for inference
+# ---------------------------
+# Load ImageNet MobileNetV2 Model
+# ---------------------------
+model = MobileNetV2(weights='imagenet', include_top=True)
 
-    model = Sequential([
-        base_model,
-        GlobalAveragePooling2D(),
-        Dense(5, activation='softmax')  # 5 classes
-    ])
+# ---------------------------
+# Load Calorie Data
+# ---------------------------
+labels_path = os.path.join("data", "calorie_data.csv")
+calorie_df = pd.read_csv(labels_path)
+calorie_df = calorie_df.drop_duplicates(subset=['food'])  # remove duplicate rows
+food_list = calorie_df["food"].str.lower().tolist()
 
-    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    return model
-
-# Build model (no loading .h5)
-model = build_model()
-
-# Optional: load your trained weights if you have them saved separately
-# model.load_weights("model/food_classifier_weights.h5")
-
-# Load calorie data
-calorie_df = pd.read_csv("data/calorie_data.csv")
-
+# ---------------------------
+# Preprocess Image
+# ---------------------------
 def preprocess_image(img):
-    img = img.resize((224, 224))
+    """Accepts file path or PIL Image, returns preprocessed tensor."""
+    if isinstance(img, str):  # file path
+        img = image.load_img(img, target_size=(224, 224))
+    elif isinstance(img, Image.Image):  # PIL Image
+        img = img.resize((224, 224))
+
     img_array = image.img_to_array(img)
     img_array = np.expand_dims(img_array, axis=0)
-    img_array /= 255.0
-    return img_array
+    return preprocess_input(img_array)
 
-def predict_food(img):
-    processed = preprocess_image(img)
-    prediction = model.predict(processed)
-    predicted_class = np.argmax(prediction)
-    return predicted_class
+# ---------------------------
+# Predict Food (Filtered to CSV Foods)
+# ---------------------------
+def predict_food(img, top_k=5):
+    """
+    Predict food name & probability from image.
+    Only returns items that match the food list from calorie_data.csv.
+    """
+    x = preprocess_image(img)
+    preds = model.predict(x)
+    decoded = decode_predictions(preds, top=top_k)[0]
 
-def get_food_label(class_id):
-    class_labels = ['pizza', 'burger', 'salad', 'sushi', 'fried_rice']
-    return class_labels[class_id]
+    # Loop through predictions and find first match in food_list
+    for (_, label, prob) in decoded:
+        label_clean = label.replace("_", " ").lower()
+        if label_clean in food_list:
+            return label_clean, prob * 100
+
+    # If no match, return top prediction anyway
+    return decoded[0][1].replace("_", " ").lower(), decoded[0][2] * 100
+
+# ---------------------------
+# Get Calories
+def normalize_name(name):
+    return name.lower().replace("_", "").replace(" ", "")
 
 def get_calories(food_name):
-    row = calorie_df[calorie_df['food'] == food_name]
+    """Return calorie info if food is in calorie_data.csv"""
+    normalized_food = normalize_name(food_name)
+    calorie_df['normalized'] = calorie_df['food'].apply(normalize_name)
+
+    row = calorie_df[calorie_df['normalized'] == normalized_food]
     if not row.empty:
         return int(row['calories'].values[0])
     return None
+
