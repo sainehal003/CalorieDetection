@@ -1,6 +1,5 @@
 import numpy as np
-import os
-import pandas as pd
+import requests
 from tensorflow.keras.preprocessing import image
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input, decode_predictions
@@ -12,21 +11,11 @@ from PIL import Image
 model = MobileNetV2(weights='imagenet', include_top=True)
 
 # ---------------------------
-# Load Calorie Data
-# ---------------------------
-labels_path = os.path.join("data", "calorie_data.csv")
-calorie_df = pd.read_csv(labels_path)
-calorie_df = calorie_df.drop_duplicates(subset=['food'])  # remove duplicate rows
-food_list = calorie_df["food"].str.lower().tolist()
-
-# ---------------------------
 # Preprocess Image
 # ---------------------------
 def preprocess_image(img):
-    """Accepts file path or PIL Image, returns preprocessed tensor."""
-    if isinstance(img, str):  # file path
-        img = image.load_img(img, target_size=(224, 224))
-    elif isinstance(img, Image.Image):  # PIL Image
+    """Accepts a PIL Image, returns preprocessed tensor."""
+    if isinstance(img, Image.Image):
         img = img.resize((224, 224))
 
     img_array = image.img_to_array(img)
@@ -34,38 +23,61 @@ def preprocess_image(img):
     return preprocess_input(img_array)
 
 # ---------------------------
-# Predict Food (Filtered to CSV Foods)
+# Predict Food
 # ---------------------------
-def predict_food(img, top_k=5):
+def predict_food(img, top_k=1):
     """
-    Predict food name & probability from image.
-    Only returns items that match the food list from calorie_data.csv.
+    Predict food name & probability from an image using MobileNetV2.
+    Returns the top prediction from the ImageNet model.
     """
     x = preprocess_image(img)
     preds = model.predict(x)
+    # decode_predictions returns a list of lists of tuples `(class_id, description, probability)`
     decoded = decode_predictions(preds, top=top_k)[0]
 
-    # Loop through predictions and find first match in food_list
-    for (_, label, prob) in decoded:
-        label_clean = label.replace("_", " ").lower()
-        if label_clean in food_list:
-            return label_clean, prob * 100
-
-    # If no match, return top prediction anyway
-    return decoded[0][1].replace("_", " ").lower(), decoded[0][2] * 100
+    # Get the top prediction
+    top_prediction = decoded[0]
+    food_name = top_prediction[1].replace("_", " ")
+    confidence = top_prediction[2] * 100
+    
+    return food_name, confidence
 
 # ---------------------------
-# Get Calories
-def normalize_name(name):
-    return name.lower().replace("_", "").replace(" ", "")
-
+# Get Calories via Open Food Facts API
+# ---------------------------
 def get_calories(food_name):
-    """Return calorie info if food is in calorie_data.csv"""
-    normalized_food = normalize_name(food_name)
-    calorie_df['normalized'] = calorie_df['food'].apply(normalize_name)
+    """
+    Return calorie info from the Open Food Facts API.
+    Searches for the food name and returns calories per 100g.
+    """
+    # Format the food name for the API URL
+    search_term = food_name.lower().strip()
+    
+    # Construct the API request URL
+    url = f"https://world.openfoodfacts.org/cgi/search.pl?search_terms={search_term}&search_simple=1&action=process&json=1&page_size=1"
+    
+    headers = {
+        'User-Agent': 'FoodCalorieEstimatorApp/1.0'
+    }
 
-    row = calorie_df[calorie_df['normalized'] == normalized_food]
-    if not row.empty:
-        return int(row['calories'].values[0])
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+        data = response.json()
+
+        # Check if any products were found and if the first product has calorie info
+        if data.get('products') and 'nutriments' in data['products'][0]:
+            nutriments = data['products'][0]['nutriments']
+            # The API provides energy in kcal per 100g
+            if 'energy-kcal_100g' in nutriments:
+                return int(nutriments['energy-kcal_100g'])
+            elif 'energy_100g' in nutriments: # Fallback to energy in kJ and convert
+                return int(nutriments['energy_100g'] * 0.239006)
+
+    except requests.exceptions.RequestException as e:
+        print(f"API request failed: {e}")
+    except (ValueError, KeyError, IndexError):
+        # Handles JSON parsing errors or missing keys
+        print("Failed to parse calorie data from API response.")
+
     return None
-

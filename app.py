@@ -18,6 +18,6 @@ if uploaded_file:
 
     st.success(f"🍕 Predicted Food: **{food_name.capitalize()}** ({confidence:.2f}%)")
     if calories:
-        st.info(f"🔥 Estimated Calories: **{calories} kcal**")
+        st.info(f"🔥 Estimated Calories: **{calories} kcal** per 100g")
     else:
         st.warning("No calorie info found for this food.")
